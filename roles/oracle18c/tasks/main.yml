@@ -1,0 +1,213 @@
+---
+- name: install x86_64 oracle dependencies
+  yum:
+    name: "{{ packages }}"
+    update_cache: yes
+  vars:
+    packages:
+    - bc
+    - binutils
+    - compat-libcap1
+    - compat-libstdc++-33*x86_64
+    - compat-libstdc++-33
+    - glibc
+    - glibc*x86_64
+    - glibc-devel
+    - glibc-devel*x86_64
+    - libaio
+    - libaio*x86_64
+    - libaio-devel
+    - libaio-devel*x86_64
+    - libX11
+    - libX11*x86_64
+    - libXau
+    - libXau*x86_64
+    - libXi
+    - libXi*x86_64
+    - libXtst
+    - libXtst*x86_64
+    - libgcc
+    - libgcc*x86_64
+    - libstdc++
+    - libstdc++*x86_64
+    - libstdc++-devel
+    - libstdc++-devel*x86_64
+    - libxcb
+    - libxcb*x86_64
+    - make
+    - smartmontools
+    - sysstat
+    - unixODBC
+    - unixODBC*x86_64
+    - unixODBC-devel
+    - unixODBC-devel*x86_64
+    - unzip
+
+- name: selinux dependencies
+  yum:
+    name: "{{ packages }}"
+  vars:
+    packages:
+    - libselinux-python
+
+- name: set up the oracle hostnames
+  lineinfile:
+    dest: /etc/hosts
+    state: present
+    line: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }} {{ inventory_hostname }}"
+
+- name: oracle-recommended sysctl
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    ignoreerrors: yes # Ignore errors about unknown keys
+  with_items:
+    - { name: "kernel.shmall", value: "1073741824" }
+    - { name: "kernel.shmmax", value: "4398046511104" }
+    - { name: "kernel.shmmni", value: "4096" }
+    - { name: "kernel.sem", value: "250 32000 100 128" }
+    - { name: "fs.file-max", value: "6815744" }
+    - { name: "fs.aio-max-nr", value: "1048576" }
+    - { name: "net.ipv4.ip_local_port_range", value: "9000 65500" }
+    - { name: "net.core.rmem_default", value: "262144" }
+    - { name: "net.core.rmem_max", value: "4194304" }
+    - { name: "net.core.wmem_default", value: "262144" }
+    - { name: "net.core.wmem_max", value: "1048576" }
+    - { name: "panic_on_oops", value: "1" }
+
+- name: save sysctl config
+  command: sysctl -p
+  ignore_errors: yes
+
+- name: oracle-recommended PAM config
+  lineinfile:
+    dest: /etc/pam.d/login
+    state: present
+    line: "session required pam_limits.so"
+
+- name: oracle-recommended security limits
+  lineinfile:
+    dest: /etc/security/limits.conf
+    state: present
+    line: "{{ item }}"
+  with_items:
+    - "oracle soft nofile 1024"
+    - "oracle hard nofile 65536"
+    - "oracle soft nproc 2047"
+    - "oracle hard nproc 16384"
+    - "oracle soft stack 10240"
+    - "oracle hard stack 32768"
+    - "oracle soft memlock 3145728"
+    - "oracle hard memlock 3145728"
+
+- name: create initial groups for the oracle user
+  group: name={{ item }} state=present
+  with_items:
+    - "{{ oracle_group }}"
+    - "{{ oracle_dba_group }}"
+    - "{{ oracle_backupdba_group }}"
+    - "{{ oracle_oper_group }}"
+    - "{{ oracle_dgdba_group }}"
+    - "{{ oracle_kmdba_group }}"
+    - "{{ oracle_racdba_group }}"
+
+- name: create oracle user
+  user:
+    name: "{{ oracle_user }}"
+    group: "{{ oracle_group }}"
+    groups: "{{ oracle_groups }}"
+    home: /home/{{ oracle_user }}
+    shell: /bin/bash
+    password: "{{ oracle_pass }}"
+    append: yes
+
+- name: create the oracle installation path
+  file:
+    mode: 0755
+    path: "{{ oracle_path }}"
+    state: directory
+    group: "{{ oracle_group }}"
+    owner: "{{ oracle_user }}"
+
+- name: set oracle user environment
+  lineinfile: dest=/home/{{ oracle_user }}/.bashrc state=present line="{{ item }}"
+  with_items:
+    - "export ORACLE_BASE={{ ora_user_env.ORACLE_BASE }}"
+    - "export ORACLE_SID={{ ora_user_env.ORACLE_SID }}"
+    - "export ORACLE_HOME={{ ora_user_env.ORACLE_HOME }}"
+    - "export PATH=$PATH:$ORACLE_HOME/bin"
+    - "export NLS_LANG={{ ora_user_env.NLS_LANG }}"
+
+- name: disable transparent_hugepage
+  lineinfile:
+    dest: /etc/default/grub
+    state: present
+    regexp: '^GRUB_CMDLINE_LINUX=.*'
+    line: 'GRUB_CMDLINE_LINUX="no_timer_check console=tty0 console=ttyS0,115200n8 net.ifnames=0 biosdevname=0 elevator=noop crashkernel=auto rd.lvm.lv=VolGroup00/LogVol00 rd.lvm.lv=VolGroup00/LogVol01 transparent_hugepage=never rhgb quiet"'
+
+- name: make grub.cfg
+  command: grub2-mkconfig -o /boot/grub2/grub.cfg
+
+- name: reboot
+  shell: "sleep 5 && reboot"
+  async: 1
+  poll: 0
+
+- name: wait for rebooting
+  wait_for_connection: 
+    delay: 5
+    timeout: 600
+
+- name: check transparent_hugepage
+  shell: "cat /sys/kernel/mm/transparent_hugepage/enabled"
+  register: result_hugepage
+
+#- name: debug
+#  debug:
+#   var: result_hugepage
+
+- name: test transparent_hugepage is disabled
+  assert:
+    that:
+      - "result_hugepage.stdout == 'always madvise [never]'"
+
+#
+# install Oracle Database software
+#
+
+- name: create the oracle installation path
+  file:
+    mode: 0755
+    path: "{{ oracle_path }}"
+    state: directory
+    group: "{{ oracle_group }}"
+    owner: "{{ oracle_user }}"
+
+- name: create $ORACLE_HOME directory
+  file:
+    mode: 0755
+    path: "{{ oracle_db_home }}"
+    state: directory
+    group: "{{ oracle_group }}"
+    owner: "{{ oracle_user }}"
+
+- block:
+  - name: copy response file for silent install
+    template: src=db_install.rsp.j2 dest=/home/{{ oracle_user }}/db_install.rsp
+
+  - name: extract the installation media to $ORACLE_HOME
+    unarchive:
+      src: /vagrant/roles/oracle18c/files/LINUX.X64_180000_db_home.zip
+      dest: "{{ oracle_db_home }}"
+      remote_src: yes
+
+  - name: runInstaller
+    command: ./runInstaller -responseFile /home/{{ oracle_user }}/db_install.rsp -silent
+    ignore_errors: yes
+    args:
+      chdir: "{{ oracle_db_home }}"
+
+  become: yes
+  become_user: "{{ oracle_user }}"
+

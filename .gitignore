@@ -1,0 +1,6 @@
+.DS_Store
+.vagrant
+*.retry
+*~
+**/LINUX.X64_180000_db_home.zip
+
