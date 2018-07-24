@@ -1,0 +1,17 @@
+---
+#
+# create database
+#
+- block:
+  - name: copy response file for silent install
+    template: src=dbca.rsp.j2 dest=/home/{{ oracle_user }}/dbca.rsp
+
+  - name: dbca
+    command: bin/dbca -silent -createDatabase -responseFile /home/{{ oracle_user }}/dbca.rsp
+    ignore_errors: yes
+    args:
+      chdir: "{{ oracle_db_home }}"
+
+  become: yes
+  become_user: "{{ oracle_user }}"
+

@@ -165,7 +165,7 @@
 
 #- name: debug
 #  debug:
-#   var: result_hugepage
+#  var: result_hugepage
 
 - name: test transparent_hugepage is disabled
   assert:
@@ -210,4 +210,3 @@
 
   become: yes
   become_user: "{{ oracle_user }}"
-

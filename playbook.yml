@@ -4,3 +4,4 @@
   become: true
   roles:
   - oracle18c
+  - dbca
